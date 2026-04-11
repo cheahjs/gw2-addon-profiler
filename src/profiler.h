@@ -1,48 +1,65 @@
 #pragma once
 
-#include <Nexus.h>
 #include <windows.h>
 #include <cstddef>
 #include <cstdint>
 
 namespace Profiler {
 
-struct CallbackStats {
-    char addon_name[256];
-    char callback_type[32];
-    double last_us;
-    double avg_us;
-    double peak_us;
-    uint64_t call_count;
-    bool active;
+// ── Callback stat block (used by the UI) ─────────────────────
+struct Stats {
+    double   last_us;
+    double   avg_us;
+    double   peak_us;
+    uint64_t count;
 };
 
-void Init(AddonAPI_t* api, HMODULE ownModule);
+// ── Per-addon information visible to the UI ──────────────────
+struct AddonInfo {
+    char   name[256];
+    bool   active;
+    bool   is_arcdps;      // true = arcdps, false = nexus
+
+    // arcdps per-callback stats
+    Stats  imgui;
+    Stats  combat;
+    Stats  wnd;
+    Stats  options;
+};
+
+// ── Per-render-callback info (Nexus GUI_RENDER) ──────────────
+struct RenderInfo {
+    char   addon_name[256];
+    char   callback_type[32];
+    bool   active;
+    Stats  stats;
+};
+
+// ── Lifecycle ────────────────────────────────────────────────
+void Init();
 void Shutdown();
+void OnFrameTick();
 
-void OnPreRender();
-void OnPostRender();
+// ── Called by the GetProcAddress hook in dllmain ─────────────
+FARPROC OnArcdpsAddonDetected(HMODULE module, FARPROC realAddr);
+FARPROC OnNexusAddonDetected(HMODULE module, FARPROC realAddr);
 
-// Nexus event handlers
-void OnAddonLoaded(void* eventArgs);
-void OnAddonUnloaded(void* eventArgs);
+// ── Accessors for the UI ─────────────────────────────────────
+double   GetFrameTimeMs();
+double   GetFrameTimeAvgMs();
+double   GetFrameTimePeakMs();
+double   GetFPS();
 
-// Frame timing
-double GetFrameTimeMs();
-double GetFrameTimeAvgMs();
-double GetFrameTimePeakMs();
-double GetFPS();
-uint64_t GetFrameCount();
-
-// Frame history for graph
 const float* GetFrameHistory();
-int GetFrameHistorySize();
-int GetFrameHistoryOffset();
+int   GetFrameHistorySize();
+int   GetFrameHistoryOffset();
 
-// Per-callback stats
-size_t GetMaxSlots();
-const CallbackStats* GetCallbackStats(size_t index);
-size_t GetActiveCallbackCount();
+size_t GetMaxAddons();
+const AddonInfo* GetAddonInfo(size_t index);
+
+size_t GetMaxRenderSlots();
+const RenderInfo* GetRenderInfo(size_t index);
+
 void ResetStats();
 
 } // namespace Profiler

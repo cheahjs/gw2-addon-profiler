@@ -8,115 +8,120 @@ static bool g_visible = true;
 
 namespace UI {
 
-bool  IsVisible()     { return g_visible; }
-void  Toggle()        { g_visible = !g_visible; }
-bool* GetVisiblePtr() { return &g_visible; }
+bool  IsVisible() { return g_visible; }
+void  Toggle()    { g_visible = !g_visible; }
+
+static void StatsColumns(const Profiler::Stats& s) {
+    ImVec4 col;
+    if      (s.last_us < 100.0) col = {0.2f,0.8f,0.2f,1.f};
+    else if (s.last_us < 500.0) col = {0.9f,0.8f,0.1f,1.f};
+    else                         col = {0.9f,0.2f,0.2f,1.f};
+    ImGui::TableNextColumn(); ImGui::TextColored(col, "%.1f", s.last_us);
+    ImGui::TableNextColumn(); ImGui::Text("%.1f", s.avg_us);
+    ImGui::TableNextColumn(); ImGui::Text("%.1f", s.peak_us);
+}
 
 void Render() {
     if (!g_visible) return;
 
-    ImGui::SetNextWindowSize(ImVec2(540, 420), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Nexus Profiler", &g_visible)) {
-        ImGui::End();
-        return;
-    }
+    ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Nexus Profiler", &g_visible)) { ImGui::End(); return; }
 
-    // ── Frame timing header ──────────────────────────────────
-    double frameMs = Profiler::GetFrameTimeMs();
-    double avgMs   = Profiler::GetFrameTimeAvgMs();
-    double peakMs  = Profiler::GetFrameTimePeakMs();
-    double fps     = Profiler::GetFPS();
-
+    // ── Frame timing ─────────────────────────────────────────
+    double ms   = Profiler::GetFrameTimeMs();
+    double avg  = Profiler::GetFrameTimeAvgMs();
+    double peak = Profiler::GetFrameTimePeakMs();
+    double fps  = Profiler::GetFPS();
     ImGui::Text("Frame: %.2f ms (%.0f FPS)  |  Avg: %.2f ms  |  Peak: %.2f ms",
-                frameMs, fps, avgMs, peakMs);
-
-    ImGui::TextDisabled("Connect Tracy profiler to localhost:8086 for timeline view");
-
+                ms, fps, avg, peak);
+    ImGui::TextDisabled("Connect Tracy to localhost:8086 for timeline view");
     ImGui::Separator();
 
-    // ── Frame time graph ─────────────────────────────────────
-    ImGui::PlotLines("##FrameTime",
-                     Profiler::GetFrameHistory(),
+    ImGui::PlotLines("##ft", Profiler::GetFrameHistory(),
                      Profiler::GetFrameHistorySize(),
                      Profiler::GetFrameHistoryOffset(),
-                     "Frame Time (ms)",
-                     0.0f, 33.3f,
-                     ImVec2(-1, 60));
-
+                     "Frame Time (ms)", 0.f, 33.3f, ImVec2(-1, 60));
     ImGui::Separator();
 
-    // ── Per-addon callback table ─────────────────────────────
-    size_t activeCount = Profiler::GetActiveCallbackCount();
-    ImGui::Text("Profiling %zu addon callback(s)", activeCount);
+    // ── arcdps addons ────────────────────────────────────────
+    bool hasArcdps = false;
+    for (size_t i = 0; i < Profiler::GetMaxAddons(); i++) {
+        auto* a = Profiler::GetAddonInfo(i);
+        if (a && a->active && a->is_arcdps) { hasArcdps = true; break; }
+    }
 
-    if (activeCount > 0 &&
-        ImGui::BeginTable("##AddonTimings", 5,
-            ImGuiTableFlags_Borders   |
-            ImGuiTableFlags_RowBg     |
-            ImGuiTableFlags_Resizable |
-            ImGuiTableFlags_ScrollY,
-            ImVec2(0, 0)))
-    {
-        ImGui::TableSetupColumn("Addon");
-        ImGui::TableSetupColumn("Type",
-            ImGuiTableColumnFlags_WidthFixed, 72.0f);
-        ImGui::TableSetupColumn("Last (us)",
-            ImGuiTableColumnFlags_WidthFixed, 72.0f);
-        ImGui::TableSetupColumn("Avg (us)",
-            ImGuiTableColumnFlags_WidthFixed, 72.0f);
-        ImGui::TableSetupColumn("Peak (us)",
-            ImGuiTableColumnFlags_WidthFixed, 72.0f);
-        ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableHeadersRow();
+    if (hasArcdps && ImGui::CollapsingHeader("arcdps Addons", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::BeginTable("##arc", 5,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                ImVec2(0, 0)))
+        {
+            ImGui::TableSetupColumn("Addon");
+            ImGui::TableSetupColumn("Last (us)", ImGuiTableColumnFlags_WidthFixed, 68);
+            ImGui::TableSetupColumn("Avg (us)",  ImGuiTableColumnFlags_WidthFixed, 68);
+            ImGui::TableSetupColumn("Peak (us)", ImGuiTableColumnFlags_WidthFixed, 68);
+            ImGui::TableSetupColumn("Type",      ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
 
-        for (size_t i = 0; i < Profiler::GetMaxSlots(); i++) {
-            const auto* st = Profiler::GetCallbackStats(i);
-            if (!st || !st->active) continue;
+            for (size_t i = 0; i < Profiler::GetMaxAddons(); i++) {
+                auto* a = Profiler::GetAddonInfo(i);
+                if (!a || !a->active || !a->is_arcdps) continue;
 
-            ImGui::TableNextRow();
-
-            // Addon name
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(st->addon_name);
-
-            // Callback type
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(st->callback_type);
-
-            // Last (color-coded)
-            ImGui::TableNextColumn();
-            ImVec4 color;
-            if      (st->last_us < 100.0) color = ImVec4(0.2f, 0.8f, 0.2f, 1.0f);
-            else if (st->last_us < 500.0) color = ImVec4(0.9f, 0.8f, 0.1f, 1.0f);
-            else                           color = ImVec4(0.9f, 0.2f, 0.2f, 1.0f);
-            ImGui::TextColored(color, "%.1f", st->last_us);
-
-            // Avg
-            ImGui::TableNextColumn();
-            ImGui::Text("%.1f", st->avg_us);
-
-            // Peak
-            ImGui::TableNextColumn();
-            ImGui::Text("%.1f", st->peak_us);
+                auto row = [&](const char* type, const Profiler::Stats& s) {
+                    if (s.count == 0) return;
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(a->name);
+                    StatsColumns(s);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(type);
+                };
+                row("imgui",   a->imgui);
+                row("combat",  a->combat);
+                row("wndproc", a->wnd);
+                row("options", a->options);
+            }
+            ImGui::EndTable();
         }
+    }
 
-        ImGui::EndTable();
+    // ── Nexus addons ─────────────────────────────────────────
+    bool hasNexus = false;
+    for (size_t i = 0; i < Profiler::GetMaxRenderSlots(); i++) {
+        auto* r = Profiler::GetRenderInfo(i);
+        if (r && r->active) { hasNexus = true; break; }
+    }
+
+    if (hasNexus && ImGui::CollapsingHeader("Nexus Addons", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::BeginTable("##nex", 5,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                ImVec2(0, 0)))
+        {
+            ImGui::TableSetupColumn("Callback");
+            ImGui::TableSetupColumn("Last (us)", ImGuiTableColumnFlags_WidthFixed, 68);
+            ImGui::TableSetupColumn("Avg (us)",  ImGuiTableColumnFlags_WidthFixed, 68);
+            ImGui::TableSetupColumn("Peak (us)", ImGuiTableColumnFlags_WidthFixed, 68);
+            ImGui::TableSetupColumn("Type",      ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < Profiler::GetMaxRenderSlots(); i++) {
+                auto* r = Profiler::GetRenderInfo(i);
+                if (!r || !r->active) continue;
+
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(r->addon_name);
+                StatsColumns(r->stats);
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(r->callback_type);
+            }
+            ImGui::EndTable();
+        }
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Reset Stats")) {
-        Profiler::ResetStats();
-    }
+    if (ImGui::Button("Reset Stats")) Profiler::ResetStats();
 
     ImGui::End();
-}
-
-void RenderOptions() {
-    ImGui::TextUnformatted("Nexus Profiler");
-    ImGui::Separator();
-    ImGui::Checkbox("Show Profiler Window", &g_visible);
-    ImGui::TextDisabled(
-        "Tip: Assign a keybind in Nexus settings under \"KB_NEXUS_PROFILER_TOGGLE\".");
 }
 
 } // namespace UI

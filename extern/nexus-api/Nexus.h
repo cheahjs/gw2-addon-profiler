@@ -42,6 +42,10 @@ typedef enum ERenderType
 	RT_OptionsRender
 } ERenderType;
 
+/* Guard against collision with the real MinHook.h header.
+   Define NEXUS_NO_MHSTATUS before including this header if
+   you also include MinHook.h in the same translation unit. */
+#ifndef NEXUS_NO_MHSTATUS
 typedef enum EMHStatus
 {
 	MH_UNKNOWN = -1,
@@ -59,6 +63,7 @@ typedef enum EMHStatus
 	MH_ERROR_MODULE_NOT_FOUND,
 	MH_ERROR_FUNCTION_NOT_FOUND
 } EMHStatus;
+#endif /* NEXUS_NO_MHSTATUS */
 
 typedef enum ELogLevel
 {
