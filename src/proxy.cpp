@@ -2,10 +2,13 @@
 #include "hooks.h"
 #include <d3d11.h>
 #include <string>
+#include <algorithm>
 
 namespace D3D11Proxy {
 
-static HMODULE s_real = nullptr;
+static HMODULE s_chainloaded = nullptr; // arcdps / Nexus / other proxy
+static HMODULE s_real        = nullptr; // system d3d11.dll (fallback)
+static HMODULE s_active      = nullptr; // whichever we're forwarding to
 
 using CreateDevice_t = HRESULT(WINAPI*)(
     IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
@@ -21,29 +24,76 @@ using CreateDeviceAndSwapChain_t = HRESULT(WINAPI*)(
 static CreateDevice_t              s_realCreateDevice = nullptr;
 static CreateDeviceAndSwapChain_t  s_realCreateDeviceAndSwapChain = nullptr;
 
-static HMODULE LoadRealSystemDll(const wchar_t* name) {
+// ── Helpers ──────────────────────────────────────────────────
+
+static HMODULE LoadSystemDll(const wchar_t* name) {
     wchar_t sysDir[MAX_PATH];
     GetSystemDirectoryW(sysDir, MAX_PATH);
     std::wstring path = std::wstring(sysDir) + L"\\" + name;
     return LoadLibraryW(path.c_str());
 }
 
+// Get the directory our DLL lives in (= game directory).
+static std::wstring GetOwnDirectory() {
+    wchar_t path[MAX_PATH];
+    HMODULE hm = nullptr;
+    GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&GetOwnDirectory), &hm);
+    GetModuleFileNameW(hm, path, MAX_PATH);
+    std::wstring dir(path);
+    auto pos = dir.find_last_of(L'\\');
+    return (pos != std::wstring::npos) ? dir.substr(0, pos + 1) : dir;
+}
+
+// Try to load a chainload target from the game directory.
+// Returns the first DLL found, or nullptr.
+static HMODULE TryChainload(const std::wstring& gameDir) {
+    // Check for well-known chainload names, in priority order.
+    static const wchar_t* candidates[] = {
+        L"d3d11_chainload.dll",
+        L"d3d11_arcdps.dll",
+        L"d3d11_nexus.dll",
+    };
+
+    for (auto name : candidates) {
+        std::wstring full = gameDir + name;
+        HMODULE h = LoadLibraryW(full.c_str());
+        if (h) return h;
+    }
+    return nullptr;
+}
+
+// ── Public API ───────────────────────────────────────────────
+
 bool Init() {
-    s_real = LoadRealSystemDll(L"d3d11.dll");
-    if (!s_real) return false;
+    std::wstring gameDir = GetOwnDirectory();
+
+    // 1. Try chainloading another d3d11 proxy (arcdps, Nexus, etc.)
+    s_chainloaded = TryChainload(gameDir);
+
+    // 2. Always load the real system DLL as well (chainloaded DLL
+    //    might need it, and we use it as a fallback).
+    s_real = LoadSystemDll(L"d3d11.dll");
+
+    s_active = s_chainloaded ? s_chainloaded : s_real;
+    if (!s_active) return false;
 
     s_realCreateDevice =
-        (CreateDevice_t)GetProcAddress(s_real, "D3D11CreateDevice");
+        (CreateDevice_t)GetProcAddress(s_active, "D3D11CreateDevice");
     s_realCreateDeviceAndSwapChain =
-        (CreateDeviceAndSwapChain_t)GetProcAddress(s_real, "D3D11CreateDeviceAndSwapChain");
+        (CreateDeviceAndSwapChain_t)GetProcAddress(s_active, "D3D11CreateDeviceAndSwapChain");
     return true;
 }
 
 void Shutdown() {
-    if (s_real) { FreeLibrary(s_real); s_real = nullptr; }
+    if (s_chainloaded) { FreeLibrary(s_chainloaded); s_chainloaded = nullptr; }
+    if (s_real)        { FreeLibrary(s_real);         s_real        = nullptr; }
+    s_active = nullptr;
 }
 
-HMODULE GetRealD3D11() { return s_real; }
+HMODULE GetRealD3D11() { return s_active; }
 
 } // namespace D3D11Proxy
 
