@@ -1,0 +1,74 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-msvc:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: cmake --preset msvc
+
+      - name: Build
+        run: cmake --build build/msvc --config Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gw2_addon_profiler-msvc
+          path: build/msvc/gw2_addon_profiler.dll
+
+  build-mingw:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MinGW + Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 ninja-build
+
+      - name: Configure
+        run: cmake --preset mingw64
+
+      - name: Build
+        run: cmake --build build/mingw64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gw2_addon_profiler-mingw
+          path: build/mingw64/gw2_addon_profiler.dll
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-msvc
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download MSVC artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gw2_addon_profiler-msvc
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gw2_addon_profiler.dll
+          generate_release_notes: true
