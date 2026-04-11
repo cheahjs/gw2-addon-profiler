@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "mingw64",
+      "displayName": "MinGW64 Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mingw64",
+      "toolchainFile": "${sourceDir}/cmake/mingw-w64-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "mingw64-debug",
+      "displayName": "MinGW64 Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mingw64-debug",
+      "toolchainFile": "${sourceDir}/cmake/mingw-w64-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "msvc",
+      "displayName": "MSVC Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "mingw64",
+      "configurePreset": "mingw64"
+    },
+    {
+      "name": "mingw64-debug",
+      "configurePreset": "mingw64-debug"
+    },
+    {
+      "name": "msvc",
+      "configurePreset": "msvc"
+    }
+  ]
+}
