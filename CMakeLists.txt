@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(nexus_profiler VERSION 0.2.0 LANGUAGES C CXX)
+project(gw2_addon_profiler VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -73,25 +73,25 @@ add_library(arcdps_api INTERFACE)
 target_include_directories(arcdps_api INTERFACE "${CMAKE_SOURCE_DIR}/extern/arcdps")
 
 # ── Main DLL ─────────────────────────────────────────────────
-add_library(nexus_profiler SHARED
+add_library(gw2_addon_profiler SHARED
     src/dllmain.cpp
     src/proxy.cpp
     src/hooks.cpp
     src/profiler.cpp
     src/imgui_impl.cpp
     src/ui.cpp
-    ${CMAKE_SOURCE_DIR}/def/nexus_profiler.def
+    ${CMAKE_SOURCE_DIR}/def/gw2_addon_profiler.def
 )
 
-target_include_directories(nexus_profiler PRIVATE src)
+target_include_directories(gw2_addon_profiler PRIVATE src)
 
-target_compile_definitions(nexus_profiler PRIVATE
+target_compile_definitions(gw2_addon_profiler PRIVATE
     _WIN32_WINNT=0x0601
     IMGUI_DISABLE_DEMO_WINDOWS
     IMGUI_DISABLE_METRICS_WINDOW
 )
 
-target_link_libraries(nexus_profiler PRIVATE
+target_link_libraries(gw2_addon_profiler PRIVATE
     Tracy::TracyClient
     minhook_lib
     imgui_lib
@@ -102,13 +102,13 @@ target_link_libraries(nexus_profiler PRIVATE
 )
 
 if(MINGW)
-    target_link_options(nexus_profiler PRIVATE
+    target_link_options(gw2_addon_profiler PRIVATE
         -static-libgcc -static-libstdc++
         -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
 endif()
 
-set_target_properties(nexus_profiler PROPERTIES
+set_target_properties(gw2_addon_profiler PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "nexus_profiler"
+    OUTPUT_NAME "gw2_addon_profiler"
     SUFFIX ".dll"
 )

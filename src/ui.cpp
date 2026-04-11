@@ -25,7 +25,7 @@ void Render() {
     if (!g_visible) return;
 
     ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Nexus Profiler", &g_visible)) { ImGui::End(); return; }
+    if (!ImGui::Begin("GW2 Addon Profiler", &g_visible)) { ImGui::End(); return; }
 
     // ── Frame timing ─────────────────────────────────────────
     double ms   = Profiler::GetFrameTimeMs();
