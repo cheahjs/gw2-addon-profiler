@@ -80,6 +80,7 @@ add_library(gw2_addon_profiler SHARED
     src/profiler.cpp
     src/imgui_impl.cpp
     src/ui.cpp
+    src/log.cpp
     ${CMAKE_SOURCE_DIR}/def/gw2_addon_profiler.def
 )
 
@@ -103,8 +104,14 @@ target_link_libraries(gw2_addon_profiler PRIVATE
 
 if(MINGW)
     target_link_options(gw2_addon_profiler PRIVATE
-        -static-libgcc -static-libstdc++
-        -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic)
+        -static-libgcc -static-libstdc++)
+    # Use a custom specs file that replaces the implicit dynamic
+    # -lpthread with a static -lwinpthread link. Without this, the
+    # g++ driver unconditionally adds -lpthread at the end of every
+    # link via its built-in specs (%{!no-pthread:-lpthread}), pulling
+    # in libwinpthread-1.dll which doesn't exist under Wine.
+    target_link_options(gw2_addon_profiler PRIVATE
+        "-specs=${CMAKE_SOURCE_DIR}/cmake/mingw-static-pthread.specs")
 endif()
 
 set_target_properties(gw2_addon_profiler PROPERTIES

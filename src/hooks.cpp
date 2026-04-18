@@ -2,6 +2,7 @@
 #include "profiler.h"
 #include "imgui_impl.h"
 #include "ui.h"
+#include "log.h"
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -75,24 +76,35 @@ namespace Hooks {
 void OnSwapChainCreated(IDXGISwapChain* swapchain) {
     if (g_vtable) return; // already hooked
 
+    Log::Write("Hooking SwapChain vtable (SwapChain=%p)", swapchain);
     g_vtable = *reinterpret_cast<void***>(swapchain);
     PatchVTable(g_vtable, 8,  (void*)&HookedPresent,       &g_origPresent);
     PatchVTable(g_vtable, 13, (void*)&HookedResizeBuffers,  &g_origResizeBuffers);
+    Log::Write("  Present: orig=%p, ResizeBuffers: orig=%p", g_origPresent, g_origResizeBuffers);
 }
 
 void OnPresent(IDXGISwapChain* swapchain) {
     // One-time ImGui + WndProc init on first Present
     if (!g_imguiInitialized) {
+        Log::Write("First Present, initializing ImGui...");
         swapchain->GetDevice(__uuidof(ID3D11Device), (void**)&g_device);
+        Log::Write("  Device: %p", g_device);
         if (g_device) g_device->GetImmediateContext(&g_context);
+        Log::Write("  Context: %p", g_context);
 
         DXGI_SWAP_CHAIN_DESC desc{};
         swapchain->GetDesc(&desc);
+        Log::Write("  OutputWindow: %p, BufferCount: %u, %ux%u",
+                   desc.OutputWindow, desc.BufferCount,
+                   desc.BufferDesc.Width, desc.BufferDesc.Height);
 
         if (g_device && g_context && desc.OutputWindow) {
             ImGuiImpl::Init(swapchain, g_device, g_context, desc.OutputWindow);
             InstallWndProc(desc.OutputWindow);
             g_imguiInitialized = true;
+            Log::Write("  ImGui initialized OK");
+        } else {
+            Log::Write("  ImGui init SKIPPED (missing device/context/window)");
         }
     }
 

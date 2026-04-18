@@ -2,6 +2,7 @@
 #include <MinHook.h>
 #include "proxy.h"
 #include "profiler.h"
+#include "log.h"
 
 static HMODULE g_hModule = nullptr;
 
@@ -22,12 +23,18 @@ static FARPROC WINAPI HookedGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     if (hModule == g_hModule) return result;
 
     if (strcmp(lpProcName, "get_init_addr") == 0) {
+        Log::Write("GetProcAddress: get_init_addr from module %p", hModule);
         FARPROC wrapped = Profiler::OnArcdpsAddonDetected(hModule, result);
+        if (wrapped) Log::Write("  -> arcdps addon instrumented");
+        else         Log::Write("  -> failed to instrument");
         if (wrapped) return wrapped;
     }
 
     if (strcmp(lpProcName, "GetAddonDef") == 0) {
+        Log::Write("GetProcAddress: GetAddonDef from module %p", hModule);
         FARPROC wrapped = Profiler::OnNexusAddonDetected(hModule, result);
+        if (wrapped) Log::Write("  -> Nexus addon instrumented");
+        else         Log::Write("  -> failed to instrument");
         if (wrapped) return wrapped;
     }
 
@@ -41,24 +48,43 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hModule);
         g_hModule = hModule;
 
-        if (!D3D11Proxy::Init()) return FALSE;
+        Log::Init();
+        Log::Write("=== gw2-addon-profiler starting ===");
 
-        MH_Initialize();
+        Log::Write("Initializing D3D11 proxy...");
+        if (!D3D11Proxy::Init()) {
+            Log::Write("D3D11 proxy init FAILED");
+            Log::Shutdown();
+            return FALSE;
+        }
+        Log::Write("D3D11 proxy init OK");
 
-        MH_CreateHook(reinterpret_cast<void*>(&GetProcAddress),
+        MH_STATUS mhStatus = MH_Initialize();
+        Log::Write("MinHook init: %d", mhStatus);
+
+        mhStatus = MH_CreateHook(reinterpret_cast<void*>(&GetProcAddress),
                        reinterpret_cast<void*>(&HookedGetProcAddress),
                        reinterpret_cast<void**>(&g_origGetProcAddress));
-        MH_EnableHook(reinterpret_cast<void*>(&GetProcAddress));
+        Log::Write("GetProcAddress hook create: %d", mhStatus);
+
+        mhStatus = MH_EnableHook(reinterpret_cast<void*>(&GetProcAddress));
+        Log::Write("GetProcAddress hook enable: %d", mhStatus);
 
         Profiler::Init();
+        Log::Write("Profiler initialized");
     }
     else if (reason == DLL_PROCESS_DETACH) {
+        Log::Write("=== gw2-addon-profiler shutting down ===");
+
         Profiler::Shutdown();
 
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
 
         D3D11Proxy::Shutdown();
+
+        Log::Write("Shutdown complete");
+        Log::Shutdown();
     }
     return TRUE;
 }

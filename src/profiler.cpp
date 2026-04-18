@@ -1,4 +1,5 @@
 #include "profiler.h"
+#include "log.h"
 
 #include <MinHook.h>
 // MinHook's MH_STATUS enum names collide with Nexus.h's EMHStatus;
@@ -294,6 +295,32 @@ static const auto kRender = MkRender(std::make_index_sequence<MAX_RENDER_SLOTS>{
 static void HookedGUIRegister(ERenderType type, GUI_RENDER cb) {
     if (!cb) return;
 
+    // Resolve addon name BEFORE acquiring the lock, because GetProcAddress
+    // goes through our hook which may re-enter AllocAddonSlot and deadlock.
+    HMODULE hMod = nullptr;
+    GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(cb), &hMod);
+
+    char addonName[256] = "Unknown";
+    if (hMod) {
+        // Check if we already have a name for this module from addon detection
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lk(g_addonMutex);
+            for (size_t i = 0; i < MAX_ADDONS; i++) {
+                if (g_addons[i].active && g_addons[i].module == hMod && g_addons[i].name[0]) {
+                    strncpy(addonName, g_addons[i].name, sizeof(addonName) - 1);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found)
+            ResolveName(hMod, addonName, sizeof(addonName));
+    }
+
     // Find a free render slot and wrap
     std::lock_guard<std::mutex> lk(g_addonMutex);
     for (size_t i = 0; i < MAX_RENDER_SLOTS; i++) {
@@ -302,26 +329,6 @@ static void HookedGUIRegister(ERenderType type, GUI_RENDER cb) {
             r.original    = cb;
             r.render_type = type;
             r.active      = true;
-
-            // Resolve addon name from callback address
-            HMODULE hMod = nullptr;
-            GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(cb), &hMod);
-
-            char addonName[256] = "Unknown";
-            if (hMod) {
-                // Try GetAddonDef for the friendly name
-                using Fn = AddonDefinition_t*(*)();
-                auto fn = (Fn)GetProcAddress(hMod, "GetAddonDef");
-                if (fn) {
-                    auto* d = fn();
-                    if (d && d->Name) strncpy(addonName, d->Name, sizeof(addonName) - 1);
-                } else {
-                    ResolveName(hMod, addonName, sizeof(addonName));
-                }
-            }
 
             snprintf(r.zone_name, sizeof(r.zone_name), "%s [%s]",
                      addonName, RenderTypeName(type));
@@ -351,15 +358,22 @@ static void HookedGUIDeregister(GUI_RENDER cb) {
 
 static void InstallGUIHooks(AddonAPI_t* api) {
     if (g_guiHooked) return;
-    MH_CreateHook(reinterpret_cast<void*>(api->GUI_Register),
+    Log::Write("Installing Nexus GUI hooks (Register=%p, Deregister=%p)",
+               api->GUI_Register, api->GUI_Deregister);
+    MH_STATUS st;
+    st = MH_CreateHook(reinterpret_cast<void*>(api->GUI_Register),
                    reinterpret_cast<void*>(&HookedGUIRegister),
                    reinterpret_cast<void**>(&g_origGUIRegister));
-    MH_EnableHook(reinterpret_cast<void*>(api->GUI_Register));
+    Log::Write("  GUI_Register hook create: %d", st);
+    st = MH_EnableHook(reinterpret_cast<void*>(api->GUI_Register));
+    Log::Write("  GUI_Register hook enable: %d", st);
 
-    MH_CreateHook(reinterpret_cast<void*>(api->GUI_Deregister),
+    st = MH_CreateHook(reinterpret_cast<void*>(api->GUI_Deregister),
                    reinterpret_cast<void*>(&HookedGUIDeregister),
                    reinterpret_cast<void**>(&g_origGUIDeregister));
-    MH_EnableHook(reinterpret_cast<void*>(api->GUI_Deregister));
+    Log::Write("  GUI_Deregister hook create: %d", st);
+    st = MH_EnableHook(reinterpret_cast<void*>(api->GUI_Deregister));
+    Log::Write("  GUI_Deregister hook enable: %d", st);
     g_guiHooked = true;
 }
 
@@ -408,33 +422,46 @@ namespace Profiler {
 
 FARPROC OnArcdpsAddonDetected(HMODULE module, FARPROC realAddr) {
     size_t idx = AllocAddonSlot(module);
-    if (idx == SIZE_MAX) return nullptr;
+    if (idx == SIZE_MAX) {
+        Log::Write("arcdps addon: no free slot for module %p", module);
+        return nullptr;
+    }
 
     auto& slot = g_addons[idx];
     slot.is_arcdps = true;
     ResolveName(module, slot.name, sizeof(slot.name));
+    Log::Write("arcdps addon detected: %s (module=%p, slot=%zu)", slot.name, module, idx);
 
-    MH_CreateHook(reinterpret_cast<void*>(realAddr),
+    MH_STATUS st;
+    st = MH_CreateHook(reinterpret_cast<void*>(realAddr),
                    reinterpret_cast<void*>(kGetInitAddr[idx]),
                    reinterpret_cast<void**>(&slot.orig_get_init_addr));
-    MH_EnableHook(reinterpret_cast<void*>(realAddr));
+    Log::Write("  get_init_addr hook create: %d", st);
+    st = MH_EnableHook(reinterpret_cast<void*>(realAddr));
+    Log::Write("  get_init_addr hook enable: %d", st);
 
-    // Return the real address (MinHook patched it to jump to our trampoline)
     return realAddr;
 }
 
 FARPROC OnNexusAddonDetected(HMODULE module, FARPROC realAddr) {
     size_t idx = AllocAddonSlot(module);
-    if (idx == SIZE_MAX) return nullptr;
+    if (idx == SIZE_MAX) {
+        Log::Write("Nexus addon: no free slot for module %p", module);
+        return nullptr;
+    }
 
     auto& slot = g_addons[idx];
     slot.is_arcdps = false;
     ResolveName(module, slot.name, sizeof(slot.name));
+    Log::Write("Nexus addon detected: %s (module=%p, slot=%zu)", slot.name, module, idx);
 
-    MH_CreateHook(reinterpret_cast<void*>(realAddr),
+    MH_STATUS st;
+    st = MH_CreateHook(reinterpret_cast<void*>(realAddr),
                    reinterpret_cast<void*>(kGetAddonDef[idx]),
                    reinterpret_cast<void**>(&slot.orig_getaddondef));
-    MH_EnableHook(reinterpret_cast<void*>(realAddr));
+    Log::Write("  GetAddonDef hook create: %d", st);
+    st = MH_EnableHook(reinterpret_cast<void*>(realAddr));
+    Log::Write("  GetAddonDef hook enable: %d", st);
 
     return realAddr;
 }

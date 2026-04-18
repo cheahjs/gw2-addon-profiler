@@ -1,5 +1,6 @@
 #include "proxy.h"
 #include "hooks.h"
+#include "log.h"
 #include <d3d11.h>
 #include <string>
 #include <algorithm>
@@ -69,21 +70,31 @@ static HMODULE TryChainload(const std::wstring& gameDir) {
 
 bool Init() {
     std::wstring gameDir = GetOwnDirectory();
+    Log::Write("Game directory: %ls", gameDir.c_str());
 
     // 1. Try chainloading another d3d11 proxy (arcdps, Nexus, etc.)
     s_chainloaded = TryChainload(gameDir);
+    Log::Write("Chainload DLL: %p", s_chainloaded);
 
     // 2. Always load the real system DLL as well (chainloaded DLL
     //    might need it, and we use it as a fallback).
     s_real = LoadSystemDll(L"d3d11.dll");
+    Log::Write("System d3d11.dll: %p", s_real);
 
     s_active = s_chainloaded ? s_chainloaded : s_real;
-    if (!s_active) return false;
+    if (!s_active) {
+        Log::Write("ERROR: No D3D11 DLL available");
+        return false;
+    }
+    Log::Write("Active D3D11 DLL: %p (chainloaded=%s)", s_active,
+               s_chainloaded ? "yes" : "no");
 
     s_realCreateDevice =
         (CreateDevice_t)GetProcAddress(s_active, "D3D11CreateDevice");
     s_realCreateDeviceAndSwapChain =
         (CreateDeviceAndSwapChain_t)GetProcAddress(s_active, "D3D11CreateDeviceAndSwapChain");
+    Log::Write("D3D11CreateDevice: %p", s_realCreateDevice);
+    Log::Write("D3D11CreateDeviceAndSwapChain: %p", s_realCreateDeviceAndSwapChain);
     return true;
 }
 
@@ -106,11 +117,17 @@ HRESULT WINAPI D3D11CreateDevice(
     UINT SDKVersion, ID3D11Device** ppDevice, D3D_FEATURE_LEVEL* pFeatureLevel,
     ID3D11DeviceContext** ppImmediateContext)
 {
-    if (!D3D11Proxy::s_realCreateDevice) return E_FAIL;
-    return D3D11Proxy::s_realCreateDevice(
+    Log::Write("D3D11CreateDevice called (DriverType=%d, Flags=0x%x)", DriverType, Flags);
+    if (!D3D11Proxy::s_realCreateDevice) {
+        Log::Write("  -> FAIL: no real CreateDevice function");
+        return E_FAIL;
+    }
+    HRESULT hr = D3D11Proxy::s_realCreateDevice(
         pAdapter, DriverType, Software, Flags,
         pFeatureLevels, FeatureLevels, SDKVersion,
         ppDevice, pFeatureLevel, ppImmediateContext);
+    Log::Write("  -> HRESULT: 0x%08x", hr);
+    return hr;
 }
 
 HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
@@ -120,13 +137,19 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
     IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
     D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext)
 {
-    if (!D3D11Proxy::s_realCreateDeviceAndSwapChain) return E_FAIL;
+    Log::Write("D3D11CreateDeviceAndSwapChain called (DriverType=%d, Flags=0x%x)", DriverType, Flags);
+    if (!D3D11Proxy::s_realCreateDeviceAndSwapChain) {
+        Log::Write("  -> FAIL: no real CreateDeviceAndSwapChain function");
+        return E_FAIL;
+    }
     HRESULT hr = D3D11Proxy::s_realCreateDeviceAndSwapChain(
         pAdapter, DriverType, Software, Flags,
         pFeatureLevels, FeatureLevels, SDKVersion, pSwapChainDesc,
         ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+    Log::Write("  -> HRESULT: 0x%08x", hr);
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        Log::Write("  -> SwapChain created, installing Present hook");
         Hooks::OnSwapChainCreated(*ppSwapChain);
     }
     return hr;
