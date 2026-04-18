@@ -26,7 +26,7 @@ static FARPROC WINAPI HookedGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         Log::Write("GetProcAddress: get_init_addr from module %p", hModule);
         FARPROC wrapped = Profiler::OnArcdpsAddonDetected(hModule, result);
         if (wrapped) Log::Write("  -> arcdps addon instrumented");
-        else         Log::Write("  -> failed to instrument");
+        else         Log::Write("  -> skipped");
         if (wrapped) return wrapped;
     }
 
@@ -34,7 +34,7 @@ static FARPROC WINAPI HookedGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         Log::Write("GetProcAddress: GetAddonDef from module %p", hModule);
         FARPROC wrapped = Profiler::OnNexusAddonDetected(hModule, result);
         if (wrapped) Log::Write("  -> Nexus addon instrumented");
-        else         Log::Write("  -> failed to instrument");
+        else         Log::Write("  -> skipped");
         if (wrapped) return wrapped;
     }
 

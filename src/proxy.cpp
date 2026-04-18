@@ -2,6 +2,7 @@
 #include "hooks.h"
 #include "log.h"
 #include <d3d11.h>
+#include <dxgi.h>
 #include <string>
 #include <algorithm>
 
@@ -108,6 +109,81 @@ HMODULE GetRealD3D11() { return s_active; }
 
 } // namespace D3D11Proxy
 
+// ── DXGI Factory hook ───────────────────────────────────────
+//
+// GW2 calls D3D11CreateDevice (not ...AndSwapChain) and creates
+// the swap chain separately via IDXGIFactory::CreateSwapChain.
+// We hook the factory vtable to catch that.
+
+namespace {
+
+using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(
+    IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+
+void** g_factoryVtable         = nullptr;
+void*  g_origCreateSwapChain   = nullptr;
+
+static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
+    IDXGIFactory* factory, IUnknown* pDevice,
+    DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain)
+{
+    Log::Write("IDXGIFactory::CreateSwapChain called");
+    HRESULT hr = ((CreateSwapChainFn)g_origCreateSwapChain)(
+        factory, pDevice, pDesc, ppSwapChain);
+    Log::Write("  -> HRESULT: 0x%08x", hr);
+
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        Log::Write("  -> SwapChain created via DXGI, installing Present hook");
+        Hooks::OnSwapChainCreated(*ppSwapChain);
+    }
+    return hr;
+}
+
+static void PatchFactoryVTable(void** vtable, int index, void* hook, void** origOut) {
+    *origOut = vtable[index];
+    DWORD oldProt;
+    VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &oldProt);
+    vtable[index] = hook;
+    VirtualProtect(&vtable[index], sizeof(void*), oldProt, &oldProt);
+}
+
+static void HookDXGIFactory(ID3D11Device* device) {
+    if (g_factoryVtable) return; // already hooked
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    HRESULT hr = device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+    if (FAILED(hr) || !dxgiDevice) {
+        Log::Write("Failed to get IDXGIDevice: 0x%08x", hr);
+        return;
+    }
+
+    IDXGIAdapter* adapter = nullptr;
+    hr = dxgiDevice->GetAdapter(&adapter);
+    dxgiDevice->Release();
+    if (FAILED(hr) || !adapter) {
+        Log::Write("Failed to get IDXGIAdapter: 0x%08x", hr);
+        return;
+    }
+
+    IDXGIFactory* factory = nullptr;
+    hr = adapter->GetParent(__uuidof(IDXGIFactory), (void**)&factory);
+    adapter->Release();
+    if (FAILED(hr) || !factory) {
+        Log::Write("Failed to get IDXGIFactory: 0x%08x", hr);
+        return;
+    }
+
+    Log::Write("Hooking IDXGIFactory::CreateSwapChain (factory=%p)", factory);
+    g_factoryVtable = *reinterpret_cast<void***>(factory);
+    PatchFactoryVTable(g_factoryVtable, 10, (void*)&HookedCreateSwapChain,
+                       &g_origCreateSwapChain);
+    Log::Write("  CreateSwapChain: orig=%p", g_origCreateSwapChain);
+
+    factory->Release();
+}
+
+} // anon namespace
+
 // ── Exported proxy functions ─────────────────────────────────
 extern "C" {
 
@@ -127,6 +203,10 @@ HRESULT WINAPI D3D11CreateDevice(
         pFeatureLevels, FeatureLevels, SDKVersion,
         ppDevice, pFeatureLevel, ppImmediateContext);
     Log::Write("  -> HRESULT: 0x%08x", hr);
+
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        HookDXGIFactory(*ppDevice);
+    }
     return hr;
 }
 

@@ -4,23 +4,24 @@
 #include "ui.h"
 #include "log.h"
 
+#include <MinHook.h>
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// ── Present vtable hook ──────────────────────────────────────
+// ── Present hook (via MinHook) ──────────────────────────────
 
 namespace {
 
 using PresentFn       = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 using ResizeBuffersFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 
-void** g_vtable              = nullptr;
-void*  g_origPresent         = nullptr;
-void*  g_origResizeBuffers   = nullptr;
-bool   g_imguiInitialized    = false;
+PresentFn       g_origPresent       = nullptr;
+ResizeBuffersFn g_origResizeBuffers = nullptr;
+bool            g_hooked            = false;
+bool            g_imguiInitialized  = false;
 
 ID3D11Device*        g_device  = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
@@ -29,7 +30,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(
     IDXGISwapChain* sc, UINT syncInterval, UINT flags)
 {
     Hooks::OnPresent(sc);
-    return ((PresentFn)g_origPresent)(sc, syncInterval, flags);
+    return g_origPresent(sc, syncInterval, flags);
 }
 
 static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
@@ -37,23 +38,7 @@ static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
     DXGI_FORMAT fmt, UINT fl)
 {
     ImGuiImpl::InvalidateRenderTarget();
-    return ((ResizeBuffersFn)g_origResizeBuffers)(sc, count, w, h, fmt, fl);
-}
-
-void PatchVTable(void** vtable, int index, void* hook, void** origOut) {
-    *origOut = vtable[index];
-    DWORD oldProt;
-    VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &oldProt);
-    vtable[index] = hook;
-    VirtualProtect(&vtable[index], sizeof(void*), oldProt, &oldProt);
-}
-
-void RestoreVTable(void** vtable, int index, void* orig) {
-    if (!vtable || !orig) return;
-    DWORD oldProt;
-    VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &oldProt);
-    vtable[index] = orig;
-    VirtualProtect(&vtable[index], sizeof(void*), oldProt, &oldProt);
+    return g_origResizeBuffers(sc, count, w, h, fmt, fl);
 }
 
 // ── WndProc hook ─────────────────────────────────────────────
@@ -74,13 +59,32 @@ LRESULT CALLBACK HookedWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 namespace Hooks {
 
 void OnSwapChainCreated(IDXGISwapChain* swapchain) {
-    if (g_vtable) return; // already hooked
+    if (g_hooked) return; // already hooked
 
-    Log::Write("Hooking SwapChain vtable (SwapChain=%p)", swapchain);
-    g_vtable = *reinterpret_cast<void***>(swapchain);
-    PatchVTable(g_vtable, 8,  (void*)&HookedPresent,       &g_origPresent);
-    PatchVTable(g_vtable, 13, (void*)&HookedResizeBuffers,  &g_origResizeBuffers);
-    Log::Write("  Present: orig=%p, ResizeBuffers: orig=%p", g_origPresent, g_origResizeBuffers);
+    // Read the function pointers from the vtable, then use MinHook
+    // to patch the function prologue. This survives vtable overwrites
+    // by other proxies (Nexus, arcdps).
+    void** vtable = *reinterpret_cast<void***>(swapchain);
+    void* pPresent       = vtable[8];
+    void* pResizeBuffers = vtable[13];
+
+    Log::Write("Hooking Present/ResizeBuffers via MinHook (SwapChain=%p)", swapchain);
+    Log::Write("  Present=%p, ResizeBuffers=%p", pPresent, pResizeBuffers);
+
+    MH_STATUS st;
+    st = MH_CreateHook(pPresent, (void*)&HookedPresent,
+                       reinterpret_cast<void**>(&g_origPresent));
+    Log::Write("  Present hook create: %d", st);
+    st = MH_EnableHook(pPresent);
+    Log::Write("  Present hook enable: %d", st);
+
+    st = MH_CreateHook(pResizeBuffers, (void*)&HookedResizeBuffers,
+                       reinterpret_cast<void**>(&g_origResizeBuffers));
+    Log::Write("  ResizeBuffers hook create: %d", st);
+    st = MH_EnableHook(pResizeBuffers);
+    Log::Write("  ResizeBuffers hook enable: %d", st);
+
+    g_hooked = true;
 }
 
 void OnPresent(IDXGISwapChain* swapchain) {
@@ -131,12 +135,8 @@ void RemoveWndProc() {
 }
 
 void RemovePresentHook() {
-    if (!g_vtable) return;
-    RestoreVTable(g_vtable, 8,  g_origPresent);
-    RestoreVTable(g_vtable, 13, g_origResizeBuffers);
-    g_vtable = nullptr;
-    g_origPresent = nullptr;
-    g_origResizeBuffers = nullptr;
+    // MinHook hooks are removed globally by MH_DisableHook(MH_ALL_HOOKS) in dllmain
+    g_hooked = false;
 
     if (g_imguiInitialized) {
         ImGuiImpl::Shutdown();

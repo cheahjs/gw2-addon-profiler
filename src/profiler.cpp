@@ -56,7 +56,8 @@ struct AddonSlot {
     bool    is_arcdps    = false;
 
     // arcdps --------------------------------------------------
-    get_init_addr_t orig_get_init_addr = nullptr; // MinHook trampoline
+    get_init_addr_t orig_get_init_addr = nullptr;
+    mod_init_t      orig_mod_init      = nullptr; // real mod_init returned by get_init_addr
     arcdps_exports* exports            = nullptr;
     void* orig_imgui          = nullptr;
     void* orig_combat         = nullptr;
@@ -237,22 +238,25 @@ static const auto kArcOptEnd     = MkArcOptEnd(std::make_index_sequence<MAX_ADDO
 static const auto kArcOptWin     = MkArcOptWin(std::make_index_sequence<MAX_ADDONS>{});
 
 // ═════════════════════════════════════════════════════════════
-//  arcdps get_init_addr trampoline
+//  arcdps mod_init trampoline (step 2: called by arcdps to get exports)
 // ═════════════════════════════════════════════════════════════
 
 template<size_t I>
-static arcdps_exports* GetInitAddrT(
-    const char* arcv, void* imctx, void* d3d, HMODULE arcdll,
-    void* mfn, void* ffn, uint32_t d3dv)
-{
+static arcdps_exports* ModInitT() {
     auto& slot = g_addons[I];
-    auto* ex = slot.orig_get_init_addr(arcv, imctx, d3d, arcdll, mfn, ffn, d3dv);
+    auto* ex = slot.orig_mod_init();
     if (!ex) return ex;
 
     slot.exports = ex;
     if (ex->out_name) strncpy(slot.name, ex->out_name, sizeof(slot.name) - 1);
 
-    // Replace each callback pointer with our trampoline
+    Log::Write("arcdps mod_init<%zu>: name='%s' sig=0x%x imgui=%p combat=%p",
+               I, slot.name, ex->sig, ex->imgui, ex->combat);
+
+    // Patch callbacks in-place (VirtualProtect for read-only PE sections)
+    DWORD oldProt = 0;
+    VirtualProtect(ex, sizeof(*ex), PAGE_READWRITE, &oldProt);
+
     if (ex->imgui)          { slot.orig_imgui         = ex->imgui;          ex->imgui          = (void*)kArcImgui[I]; }
     if (ex->combat)         { slot.orig_combat        = ex->combat;         ex->combat         = (void*)kArcCombat[I]; }
     if (ex->combat_local)   { slot.orig_combat_local  = ex->combat_local;   ex->combat_local   = (void*)kArcCombatLoc[I]; }
@@ -261,11 +265,35 @@ static arcdps_exports* GetInitAddrT(
     if (ex->options_end)    { slot.orig_options_end    = ex->options_end;    ex->options_end    = (void*)kArcOptEnd[I]; }
     if (ex->options_windows){ slot.orig_options_windows= ex->options_windows;ex->options_windows= (void*)kArcOptWin[I]; }
 
+    VirtualProtect(ex, sizeof(*ex), oldProt, &oldProt);
+
     char msg[512];
     snprintf(msg, sizeof(msg), "Instrumented arcdps addon: %s", slot.name);
     TracyMessage(msg, strlen(msg));
 
     return ex;
+}
+
+template<size_t... Is> static auto MkModInit(std::index_sequence<Is...>)
+    -> std::array<mod_init_t, sizeof...(Is)> { return {{ &ModInitT<Is>... }}; }
+static const auto kModInit = MkModInit(std::make_index_sequence<MAX_ADDONS>{});
+
+// ═════════════════════════════════════════════════════════════
+//  arcdps get_init_addr trampoline (step 1: returns mod_init fn ptr)
+// ═════════════════════════════════════════════════════════════
+
+template<size_t I>
+static mod_init_t GetInitAddrT(
+    const char* arcv, void* imctx, void* d3d, HMODULE arcdll,
+    void* mfn, void* ffn, uint32_t d3dv)
+{
+    auto& slot = g_addons[I];
+    mod_init_t real_init = slot.orig_get_init_addr(arcv, imctx, d3d, arcdll, mfn, ffn, d3dv);
+    if (!real_init) return real_init;
+
+    Log::Write("GetInitAddrT<%zu>: mod_init=%p, wrapping with %p", I, real_init, kModInit[I]);
+    slot.orig_mod_init = real_init;
+    return kModInit[I];
 }
 
 template<size_t... Is> static auto MkGetInitAddr(std::index_sequence<Is...>)
@@ -403,7 +431,12 @@ template<size_t I> static AddonDefinition_t* GetAddonDefT() {
     if (def && def->Load && def->Load != kLoad[I]) {
         slot.orig_load = def->Load;
         slot.nexus_def = def;
+        // The AddonDefinition_t may live in the addon's read-only section,
+        // so we must make the page writable before patching the Load pointer.
+        DWORD oldProt = 0;
+        VirtualProtect(&def->Load, sizeof(def->Load), PAGE_READWRITE, &oldProt);
         def->Load = kLoad[I];
+        VirtualProtect(&def->Load, sizeof(def->Load), oldProt, &oldProt);
         if (def->Name)
             strncpy(slot.name, def->Name, sizeof(slot.name) - 1);
     }
@@ -428,19 +461,23 @@ FARPROC OnArcdpsAddonDetected(HMODULE module, FARPROC realAddr) {
     }
 
     auto& slot = g_addons[idx];
+    // If already tracked as a Nexus addon, skip arcdps instrumentation to
+    // avoid corrupting the slot state (dual addons like arcdps_integration64).
+    if (!slot.is_arcdps && slot.orig_getaddondef) {
+        Log::Write("arcdps addon: module %p ('%s') already tracked as Nexus addon, skipping",
+                   module, slot.name);
+        return nullptr;
+    }
     slot.is_arcdps = true;
     ResolveName(module, slot.name, sizeof(slot.name));
     Log::Write("arcdps addon detected: %s (module=%p, slot=%zu)", slot.name, module, idx);
 
-    MH_STATUS st;
-    st = MH_CreateHook(reinterpret_cast<void*>(realAddr),
-                   reinterpret_cast<void*>(kGetInitAddr[idx]),
-                   reinterpret_cast<void**>(&slot.orig_get_init_addr));
-    Log::Write("  get_init_addr hook create: %d", st);
-    st = MH_EnableHook(reinterpret_cast<void*>(realAddr));
-    Log::Write("  get_init_addr hook enable: %d", st);
+    // Store the original function pointer directly — no MinHook needed.
+    // We return our trampoline from GetProcAddress instead.
+    slot.orig_get_init_addr = reinterpret_cast<get_init_addr_t>(realAddr);
+    Log::Write("  get_init_addr: orig=%p, trampoline=%p", realAddr, kGetInitAddr[idx]);
 
-    return realAddr;
+    return reinterpret_cast<FARPROC>(kGetInitAddr[idx]);
 }
 
 FARPROC OnNexusAddonDetected(HMODULE module, FARPROC realAddr) {
@@ -451,19 +488,22 @@ FARPROC OnNexusAddonDetected(HMODULE module, FARPROC realAddr) {
     }
 
     auto& slot = g_addons[idx];
+    // If already tracked as an arcdps addon, skip Nexus instrumentation.
+    if (slot.is_arcdps && slot.orig_get_init_addr) {
+        Log::Write("Nexus addon: module %p ('%s') already tracked as arcdps addon, skipping",
+                   module, slot.name);
+        return nullptr;
+    }
     slot.is_arcdps = false;
     ResolveName(module, slot.name, sizeof(slot.name));
     Log::Write("Nexus addon detected: %s (module=%p, slot=%zu)", slot.name, module, idx);
 
-    MH_STATUS st;
-    st = MH_CreateHook(reinterpret_cast<void*>(realAddr),
-                   reinterpret_cast<void*>(kGetAddonDef[idx]),
-                   reinterpret_cast<void**>(&slot.orig_getaddondef));
-    Log::Write("  GetAddonDef hook create: %d", st);
-    st = MH_EnableHook(reinterpret_cast<void*>(realAddr));
-    Log::Write("  GetAddonDef hook enable: %d", st);
+    // Store the original function pointer directly — no MinHook needed.
+    // We return our trampoline from GetProcAddress instead.
+    slot.orig_getaddondef = reinterpret_cast<AddonSlot::GetAddonDefFn>(realAddr);
+    Log::Write("  GetAddonDef: orig=%p, trampoline=%p", realAddr, kGetAddonDef[idx]);
 
-    return realAddr;
+    return reinterpret_cast<FARPROC>(kGetAddonDef[idx]);
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -495,6 +535,8 @@ void Shutdown() {
     for (size_t i = 0; i < MAX_ADDONS; i++) {
         auto& s = g_addons[i];
         if (!s.active || !s.is_arcdps || !s.exports) continue;
+        DWORD oldProt = 0;
+        VirtualProtect(s.exports, sizeof(*s.exports), PAGE_READWRITE, &oldProt);
         if (s.orig_imgui)          s.exports->imgui          = s.orig_imgui;
         if (s.orig_combat)         s.exports->combat         = s.orig_combat;
         if (s.orig_combat_local)   s.exports->combat_local   = s.orig_combat_local;
@@ -502,6 +544,7 @@ void Shutdown() {
         if (s.orig_wnd_filter)     s.exports->wnd_filter     = s.orig_wnd_filter;
         if (s.orig_options_end)    s.exports->options_end     = s.orig_options_end;
         if (s.orig_options_windows)s.exports->options_windows = s.orig_options_windows;
+        VirtualProtect(s.exports, sizeof(*s.exports), oldProt, &oldProt);
     }
     // Hooks are removed globally by MH_DisableHook(MH_ALL_HOOKS) in dllmain
 }

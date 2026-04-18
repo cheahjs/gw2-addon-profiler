@@ -37,10 +37,56 @@ void Render() {
     ImGui::TextDisabled("Connect Tracy to localhost:8086 for timeline view");
     ImGui::Separator();
 
-    ImGui::PlotLines("##ft", Profiler::GetFrameHistory(),
-                     Profiler::GetFrameHistorySize(),
-                     Profiler::GetFrameHistoryOffset(),
-                     "Frame Time (ms)", 0.f, 33.3f, ImVec2(-1, 60));
+    {
+        const float* hist = Profiler::GetFrameHistory();
+        int histSize = Profiler::GetFrameHistorySize();
+        int histOff  = Profiler::GetFrameHistoryOffset();
+        float graphH = 80.0f;
+        float scaleMax = 33.3f;
+
+        ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, graphH);
+        ImVec2 pos  = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        // Background
+        dl->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                          IM_COL32(20, 20, 30, 255));
+
+        // Bars
+        float barW = size.x / (float)histSize;
+        for (int i = 0; i < histSize; i++) {
+            int idx = (histOff + i) % histSize;
+            float v = hist[idx];
+            if (v <= 0.0f) continue;
+            float h = (v / scaleMax) * graphH;
+            if (h > graphH) h = graphH;
+
+            float x = pos.x + i * barW;
+            ImU32 col;
+            if      (v < 16.7f) col = IM_COL32(70, 200, 120, 255);  // green: <60fps budget
+            else if (v < 33.3f) col = IM_COL32(230, 200, 50, 255);  // yellow
+            else                col = IM_COL32(230, 60, 60, 255);    // red
+
+            dl->AddRectFilled(ImVec2(x, pos.y + graphH - h),
+                              ImVec2(x + barW, pos.y + graphH), col);
+        }
+
+        // 16.7ms reference line (60 FPS)
+        float lineY = pos.y + graphH - (16.7f / scaleMax) * graphH;
+        dl->AddLine(ImVec2(pos.x, lineY), ImVec2(pos.x + size.x, lineY),
+                    IM_COL32(255, 255, 255, 60));
+
+        // Border
+        dl->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                    IM_COL32(80, 80, 100, 255));
+
+        // Overlay text
+        ImGui::SetCursorScreenPos(ImVec2(pos.x + 4, pos.y + 2));
+        ImGui::Text("Frame Time (ms)");
+
+        // Advance cursor past the graph
+        ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y + ImGui::GetStyle().ItemSpacing.y));
+    }
     ImGui::Separator();
 
     // ── arcdps addons ────────────────────────────────────────

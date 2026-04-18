@@ -69,8 +69,11 @@ typedef void (*imgui_callback_t)(uint32_t not_charsel_or_loading);
 typedef void (*options_callback_t)();
 typedef void (*options_windows_callback_t)(const char* windowname);
 
-/* get_init_addr signature */
-typedef arcdps_exports* (*get_init_addr_t)(const char*, void*, void*, HMODULE, void*, void*, uint32_t);
+/* mod_init signature -- returned by get_init_addr, called by arcdps to get exports */
+typedef arcdps_exports* (*mod_init_t)();
+
+/* get_init_addr signature -- returns a mod_init function pointer, NOT arcdps_exports* */
+typedef mod_init_t (*get_init_addr_t)(const char*, void*, void*, HMODULE, void*, void*, uint32_t);
 
 /* get_release_addr signature */
 typedef void (*get_release_addr_t)();

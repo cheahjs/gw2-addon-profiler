@@ -7,20 +7,9 @@
 namespace ImGuiImpl {
 
 static ImGuiContext*          s_ctx    = nullptr;
-static ID3D11RenderTargetView* s_rtv  = nullptr;
 static IDXGISwapChain*        s_sc    = nullptr;
 static ID3D11Device*          s_dev   = nullptr;
 static ID3D11DeviceContext*   s_dc    = nullptr;
-
-static void CreateRTV() {
-    if (!s_sc || !s_dev) return;
-    ID3D11Texture2D* back = nullptr;
-    s_sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&back);
-    if (back) {
-        s_dev->CreateRenderTargetView(back, nullptr, &s_rtv);
-        back->Release();
-    }
-}
 
 void Init(IDXGISwapChain* sc, ID3D11Device* dev,
           ID3D11DeviceContext* ctx, HWND hwnd)
@@ -37,11 +26,9 @@ void Init(IDXGISwapChain* sc, ID3D11Device* dev,
 
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(dev, ctx);
-    CreateRTV();
 }
 
 void Shutdown() {
-    if (s_rtv) { s_rtv->Release(); s_rtv = nullptr; }
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     if (s_ctx) { ImGui::DestroyContext(s_ctx); s_ctx = nullptr; }
@@ -56,19 +43,30 @@ void NewFrame() {
 }
 
 void EndFrame() {
-    if (!s_ctx) return;
+    if (!s_ctx || !s_sc || !s_dev || !s_dc) return;
     ImGui::EndFrame();
     ImGui::Render();
-    if (s_rtv && s_dc) {
-        s_dc->OMSetRenderTargets(1, &s_rtv, nullptr);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+    // Acquire the current back buffer every frame. The swap chain's
+    // back buffer can change without ResizeBuffers being called through
+    // our hooks (e.g. Nexus managing buffers internally), so a cached
+    // RTV can go stale.
+    ID3D11Texture2D* back = nullptr;
+    s_sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&back);
+    if (back) {
+        ID3D11RenderTargetView* rtv = nullptr;
+        s_dev->CreateRenderTargetView(back, nullptr, &rtv);
+        back->Release();
+        if (rtv) {
+            s_dc->OMSetRenderTargets(1, &rtv, nullptr);
+            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            rtv->Release();
+        }
     }
 }
 
 void InvalidateRenderTarget() {
-    if (s_rtv) { s_rtv->Release(); s_rtv = nullptr; }
-    // Will be recreated next frame
-    CreateRTV();
+    // No-op: RTV is now created fresh each frame in EndFrame.
 }
 
 } // namespace ImGuiImpl
