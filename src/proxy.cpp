@@ -54,7 +54,6 @@ static std::wstring GetOwnDirectory() {
 static HMODULE TryChainload(const std::wstring& gameDir) {
     // Check for well-known chainload names, in priority order.
     static const wchar_t* candidates[] = {
-        L"d3d11_chainload.dll",
         L"d3d11_arcdps.dll",
         L"d3d11_nexus.dll",
     };

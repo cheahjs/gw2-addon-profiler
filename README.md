@@ -14,7 +14,7 @@ A D3D11 proxy DLL that profiles Guild Wars 2 addon performance using [Tracy](htt
 
 Download `gw2_addon_profiler.dll` from the [Releases](https://github.com/cheahjs/gw2-addon-profiler/releases) page.
 
-Place it in your Guild Wars 2 installation directory and rename it to `d3d11.dll`. If you already have a `d3d11.dll` from another addon (arcdps or Nexus), rename the existing one to `d3d11_chainload.dll` (or `d3d11_arcdps.dll` / `d3d11_nexus.dll`) and name the profiler `d3d11.dll`. The profiler will automatically chainload the other proxy.
+Place it in your Guild Wars 2 installation directory and rename it to `d3d11.dll`. If you already have a `d3d11.dll` from another addon (arcdps or Nexus), rename the existing one to `d3d11_arcdps.dll` or `d3d11_nexus.dll` and name the profiler `d3d11.dll`. The profiler will automatically chainload the other proxy. **Note:** Do not use the name `d3d11_chainload.dll` as it conflicts with Nexus's own chainload mechanism.
 
 ## Usage
 
